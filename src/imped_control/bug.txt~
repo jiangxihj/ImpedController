@@ -1,0 +1,22 @@
+1 2015/07/08 17:27
+error output after first execution
+gzserver: /usr/include/eigen3/Eigen/src/Core/DenseCoeffsBase.h:350: Eigen::DenseCoeffsBase<Derived, 1>::Scalar& Eigen::DenseCoeffsBase<Derived, 1>::operator()(Eigen::DenseCoeffsBase<Derived, 1>::Index, Eigen::DenseCoeffsBase<Derived, 1>::Index) [with Derived = Eigen::Matrix<double, -0x00000000000000001, 1>, Eigen::DenseCoeffsBase<Derived, 1>::Scalar = double, Eigen::DenseCoeffsBase<Derived, 1>::Index = long int]: Assertion `row >= 0 && row < rows() && col >= 0 && col < cols()' failed.
+Aborted (core dumped)
+
+solution: KDL::JntArray access elements should use .data(i) / not .data(i,1)
+in G_ and ArrayEigenToKDL function
+----------------------------------------------------------------------------------------------------------
+2 2015/07/09 10:09
+gzserver: /usr/include/eigen3/Eigen/src/SVD/JacobiSVD.h:456: const MatrixUType& Eigen::JacobiSVD<MatrixType, QRPreconditioner>::matrixU() const [with _MatrixType = Eigen::Matrix<double, -0x00000000000000001, -0x00000000000000001>, int QRPreconditioner = 2, Eigen::JacobiSVD<MatrixType, QRPreconditioner>::MatrixUType = Eigen::Matrix<double, -0x00000000000000001, -0x00000000000000001>, typename _MatrixType::Scalar = double]: Assertion `computeU() && "This JacobiSVD decomposition didn't compute U. Did you ask for it?"' failed.
+Aborted (core dumped)
+
+new pesudo function:(source link:http://eigen.tuxfamily.org/bz/show_bug.cgi?id=257)
+void ImpedControlClass::PseudoInverse(CartesianInertiaMatrix const & a,
+                                      double epsilon,
+                                      CartesianInertiaMatrix & inv)
+{
+	Eigen::JacobiSVD<CartesianInertiaMatrix> svd(a , Eigen::ComputeFullU | Eigen::ComputeFullV);
+	double tolerance = epsilon * std::max(a.cols(), a.rows()) * svd.singularValues().array().abs()(0);
+	inv = svd.matrixV() *  (svd.singularValues().array().abs() > tolerance).select(svd.singularValues().array().inverse(), 0).matrix().asDiagonal() * svd.matrixU().adjoint();
+}
+

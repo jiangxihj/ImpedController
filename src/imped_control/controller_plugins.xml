@@ -1,0 +1,5 @@
+<library path="lib/libimped_control">
+    <class name="imped_control/ImpedControlPlugin"
+           type="imped_control_ns::ImpedControlClass"
+           base_class_type="pr2_controller_interface::Controller" />
+</library>

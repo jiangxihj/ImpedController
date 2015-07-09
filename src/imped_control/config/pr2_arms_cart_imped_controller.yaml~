@@ -1,0 +1,9 @@
+r_arm_cart_imped_controller:
+  type: imped_control/ImpedControlPlugin
+  root_name: torso_lift_link
+  tip_name: r_gripper_tool_frame
+
+l_arm_cart_imped_controller:
+  type: imped_control/ImpedControlPlugin
+  root_name: torso_lift_link
+  tip_name: l_gripper_tool_frame

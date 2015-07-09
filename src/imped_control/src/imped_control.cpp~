@@ -1,0 +1,184 @@
+#include "imped_control/imped_control.h"
+#include <pluginlib/class_list_macros.h>
+
+
+using namespace imped_control_ns;
+using namespace boost::numeric::odeint;
+
+//------------------------------Controller function follow the routine of pr2_controller------------------------//
+bool ImpedControlClass::init(pr2_mechanism_model::RobotState *robot,
+                             ros::NodeHandle &n)
+{
+	std::string root_name, tip_name;
+	if (!n.getParam("root_name", root_name))
+	{
+		ROS_ERROR("No root name given in namespace: %s)",
+		          n.getNamespace().c_str());
+		return false;
+	}
+	if (!n.getParam("tip_name", tip_name))
+	{
+		ROS_ERROR("No tip name given in namespace: %s)",
+		          n.getNamespace().c_str());
+		return false;
+	}
+
+	// Construct a chain from the root to the tip and prepare the kinematics
+	// Note the joints must be calibrated
+	if (!chain_.init(robot, root_name, tip_name))
+	{
+		ROS_ERROR("EECartImpedControlClass could not use the chain from '%s' to '%s'",
+		          root_name.c_str(), tip_name.c_str());
+		return false;
+	}
+	if (!read_only_chain_.init(robot, root_name, tip_name))
+	{
+		ROS_ERROR
+		("EECartImpedControlClass could not use the chain from '%s' to '%s'",
+		 root_name.c_str(), tip_name.c_str());
+		return false;
+	}
+
+	// Store the robot handle for later use (to get time)
+	robot_state_ = robot;
+
+	// Construct the kdl solvers in non-realtime
+	chain_.toKDL(kdl_chain_);
+	jnt_to_pose_solver_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_));
+	jnt_to_jac_solver_.reset(new KDL::ChainJntToJacSolver(kdl_chain_));
+
+	// Resize (pre-allocate) the variables in non-realtime
+	q_.resize(kdl_chain_.getNrOfJoints());
+	qdot_.resize(kdl_chain_.getNrOfJoints());
+	tau_sum_.resize(kdl_chain_.getNrOfJoints());
+	J_.resize(kdl_chain_.getNrOfJoints());
+	J_1_.resize(kdl_chain_.getNrOfJoints());
+	M_.resize(kdl_chain_.getNrOfJoints());
+	C_.resize(kdl_chain_.getNrOfJoints());
+	G_.resize(kdl_chain_.getNrOfJoints());
+	r_.resize(kdl_chain_.getNrOfJoints());
+	std::fill(r_.begin(), r_.end(), 0);
+
+	//contruct dynamic parameter solver
+	KDL::Vector g(0.0, 0.0, -9.81);
+	grav_ = g;
+	MCG_solver_.reset(new KDL::ChainDynParam(kdl_chain_, grav_));
+
+	//initialize vector of ode class for residual error computing
+	joint_residual.resize(Joints);
+
+	//Set the value of desired inertia and damping matrix
+	// Mass_d = Eigen::MatrixXd::Identity(6, 6);
+	// Mass_d *= 5;
+	// Damp_d = Eigen::MatrixXd::Identity(Joints, Joints);
+	// Damp_d *= 30;
+
+	return true;
+}
+
+void ImpedControlClass::starting()
+{
+	// Get the current joint values to compute the initial tip location.
+	KDL::Frame init_pos;
+	KDL::JntArray q0(kdl_chain_.getNrOfJoints());
+	read_only_chain_.getPositions(q0);
+	jnt_to_pose_solver_->JntToCart(q0, init_pos);
+
+	MCG_solver_->JntToGravity(q0, G_);
+	for (int i = 0; i < Joints; i++)
+	{
+		joint_residual[i].set_tau(0);
+		joint_residual[i].set_gravity(G_.data(i, 1));
+	}
+
+	// Also reset the time-of-last-servo-cycle.
+	last_time_ = robot_state_->getTime();
+
+	//Also reset the start state of jacobian
+	jnt_to_jac_solver_->JntToJac(q0, J_1_);
+	JacobianMatrixKDLToEigen(J_1_, J_1_e);
+
+}
+
+void ImpedControlClass::update()
+{
+	// dt = (robot_state_->getTime() - last_time_).toSec();
+	// last_time_ = robot_state_->getTime();
+
+	// // Get the current joint positions and velocities
+	// chain_.getPositions(q_);
+	// chain_.getVelocities(qdot_);
+	// ArrayKDLToEigen(qdot_, qdot_e);
+
+	// // Compute the forward kinematics and Jacobian (at this location)
+	// jnt_to_pose_solver_->JntToCart(q_, x_);
+	// jnt_to_jac_solver_->JntToJac(q_, J_);
+	// //KDL matrix to eigen matrix to easily utilize linear algebra
+	// JacobianMatrixKDLToEigen(J_, J_e);
+
+	// //Compute the offset of jacobian matrix
+	// J_delta = J_e - J_1_e;
+	// J_dot = J_delta / dt;
+	// J_1_ = J_;
+	// JacobianMatrixKDLToEigen(J_1_, J_1_e);
+
+	// //compute catesian velocity
+	// for (unsigned int i = 0 ; i < 6 ; i++)
+	// {
+	// 	xdot_(i) = 0;
+	// 	for (unsigned int j = 0 ; j < kdl_chain_.getNrOfJoints() ; j++)
+	// 		xdot_(i) += J_(i, j) * qdot_.qdot(j);
+	// }
+
+	// //Compute dynamic parameter: M(inertia matrix) C(coriolis matrix) G(gravity matrix) in joint space
+	// MCG_solver_->JntToMass(q_, M_);
+	// MCG_solver_->JntToCoriolis(q_, qdot_.qdot, C_);
+	// MCG_solver_->JntToGravity(q_, G_);
+
+	// //KDL matrix to eigen matrix to easily utilize linear algebra
+	// InertiaMatrixKDLToEigen(M_, M_e);
+	// ArrayKDLToEigen(G_, G_e);
+
+	// //Compute cartesian space inertia matrix
+	// M_inv =  M_e.inverse();
+	// M_cart_inv = J_e * M_inv * J_e.transpose();
+	// PseudoInverse(M_cart_inv, 0.0001, M_cart);
+
+	// //Compute dynamiclly consistent generlized inverse matrix and projection matrix
+	// J_bar_transpose = M_cart * J_e * M_inv;
+	// null_proj = Eigen::MatrixXd::Identity(Joints, Joints) - J_e.transpose() * J_bar_transpose;
+
+	// //compute task torque
+	// tau_task_e = -J_e.transpose() * M_cart * (J_dot * qdot_e + Mass_d.inverse() * (Damp_d * xdot_e - J_bar_transpose * r_e)) + G_e - r_e;
+	// // compute posture torque
+	// //**todo: add nullspace torque
+	//tau_pose_e = JointVector::Zero();
+	//tau_pose_e = null_proj * tau_pose_e;
+
+
+	// //compute the joint generlized moment
+	// p_e = M_e * qdot_e;
+	// //update residual error
+	// for (int i = 0; i < Joints; i++)
+	// {
+	// 	joint_residual[i].set_tau(tau_task_e(i, 1));
+	// 	joint_residual[i].set_gravity(G_.data(i, 1));
+	// 	stepper_type.do_step(joint_residual[i], r_[i], 100, dt);//value of t does not matter, since it only do one step each update
+	// 	r_[i] -= p_e(i, 1);
+	// }
+	// VectorSTDToEigen(r_, r_e);
+
+	//tau_sum = tau_task_e + tau_pose_e;
+	//ArrayEigenToKDL(tau_sum, tau_sum_);
+	chain_.setEfforts(tau_sum_);
+}
+
+void ImpedControlClass::stopping()
+{
+
+}
+
+
+/// Register controller to pluginlib
+PLUGINLIB_EXPORT_CLASS(imped_control_ns::ImpedControlClass, pr2_controller_interface::Controller)
+
